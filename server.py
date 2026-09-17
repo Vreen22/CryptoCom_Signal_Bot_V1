@@ -1,67 +1,356 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import requests,time
+import requests
+import time
 
-app=FastAPI(title="Crypto.com Signal Bot V1")
-API="https://api.crypto.com/exchange/v1"
-DURATIONS=["1m","2m","3m","5m","10m","15m","30m","1h","2h","3h"]
-cache={}
+app = FastAPI(title="Crypto.com Signal Bot V2")
 
-app.mount("/static",StaticFiles(directory="app/static"),name="static")
+API = "https://api.crypto.com/exchange/v1"
 
-def get_candles(symbol,tf="1m",count=220):
-    r=requests.get(API+"/public/get-candlestick",params={"instrument_name":symbol,"timeframe":tf,"count":count},timeout=12)
-    r.raise_for_status(); j=r.json()
-    if j.get("code")!=0: raise RuntimeError(j.get("message","Crypto.com API error"))
-    d=j["result"]["data"]; d.sort(key=lambda x:x["t"]); return d
+DURATIONS = [
+    "1m", "2m", "3m", "5m", "10m",
+    "15m", "30m", "1h", "2h", "3h"
+]
 
-def ema(v,p):
-    if len(v)<p:return None
-    k=2/(p+1); x=sum(v[:p])/p
-    for n in v[p:]: x=n*k+x*(1-k)
-    return x
+DURATION_SECONDS = {
+    "1m": 60,
+    "2m": 120,
+    "3m": 180,
+    "5m": 300,
+    "10m": 600,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "2h": 7200,
+    "3h": 10800
+}
 
-def rsi(v,p=14):
-    if len(v)<p+1:return None
-    ds=[b-a for a,b in zip(v[-p-1:-1],v[-p:])]
-    g=sum(max(x,0) for x in ds)/p; l=sum(max(-x,0) for x in ds)/p
-    return 100 if l==0 else 100-100/(1+g/l)
+cache = {}
 
-def analyze(symbol,duration):
-    rows=get_candles(symbol); c=[float(x["c"]) for x in rows]
-    e50,e200=ema(c,50),ema(c,200); rr=rsi(c)
-    if e50 is None or e200 is None or rr is None: raise RuntimeError("Not enough candle data")
-    mom=(c[-1]/c[-6]-1)*100
-    buy=sell=50.0; rb=[]; rs=[]
-    if e50>e200: buy+=18; sell-=18; rb.append("EMA50 > EMA200")
-    else: sell+=18; buy-=18; rs.append("EMA50 < EMA200")
-    if rr>=55: buy+=12; rb.append(f"RSI14 {rr:.1f}")
-    elif rr<=45: sell+=12; rs.append(f"RSI14 {rr:.1f}")
-    if mom>0: buy+=min(10,abs(mom)*250); rb.append("positive momentum")
-    elif mom<0: sell+=min(10,abs(mom)*250); rs.append("negative momentum")
-    recent=c[-30:]; price=c[-1]
-    if price<=min(recent)*1.003: buy+=8; rb.append("near support")
-    if price>=max(recent)*.997: sell+=8; rs.append("near resistance")
-    direction="BUY" if buy>=sell else "SELL"
-    return {"symbol":symbol,"direction":direction,"confidence":round(max(buy,sell),1),"duration":duration,
-            "price":price,"ema50":e50,"ema200":e200,"rsi14":rr,"momentum_pct":mom,
-            "reason":" + ".join(rb if direction=="BUY" else rs) or "technical conditions",
-            "updated_at":time.time(),"auto_trade":False}
+app.mount(
+    "/static",
+    StaticFiles(directory="app/static"),
+    name="static"
+)
+
+
+def get_candles(symbol, tf="1m", count=220):
+    r = requests.get(
+        API + "/public/get-candlestick",
+        params={
+            "instrument_name": symbol,
+            "timeframe": tf,
+            "count": count
+        },
+        timeout=12
+    )
+
+    r.raise_for_status()
+
+    j = r.json()
+
+    if j.get("code") != 0:
+        raise RuntimeError(
+            j.get("message", "Crypto.com API error")
+        )
+
+    data = j["result"]["data"]
+
+    data.sort(key=lambda x: x["t"])
+
+    return data
+
+
+def ema(values, period):
+    if len(values) < period:
+        return None
+
+    k = 2 / (period + 1)
+
+    value = sum(values[:period]) / period
+
+    for number in values[period:]:
+        value = number * k + value * (1 - k)
+
+    return value
+
+
+def rsi(values, period=14):
+    if len(values) < period + 1:
+        return None
+
+    changes = [
+        b - a
+        for a, b in zip(
+            values[-period-1:-1],
+            values[-period:]
+        )
+    ]
+
+    gains = sum(max(x, 0) for x in changes) / period
+    losses = sum(max(-x, 0) for x in changes) / period
+
+    if losses == 0:
+        return 100
+
+    return 100 - 100 / (1 + gains / losses)
+
+
+def analyze(symbol, duration):
+
+    rows = get_candles(
+        symbol,
+        tf="1m",
+        count=220
+    )
+
+    closes = [
+        float(x["c"])
+        for x in rows
+    ]
+
+    ema50 = ema(closes, 50)
+    ema200 = ema(closes, 200)
+    rsi14 = rsi(closes)
+
+    if (
+        ema50 is None
+        or ema200 is None
+        or rsi14 is None
+    ):
+        raise RuntimeError(
+            "Not enough candle data"
+        )
+
+    price = closes[-1]
+
+    momentum = (
+        (closes[-1] / closes[-6]) - 1
+    ) * 100
+
+    buy_score = 50.0
+    sell_score = 50.0
+
+    buy_reasons = []
+    sell_reasons = []
+
+    # EMA TREND
+    if ema50 > ema200:
+
+        buy_score += 18
+        sell_score -= 18
+
+        buy_reasons.append(
+            "EMA50 > EMA200"
+        )
+
+    else:
+
+        sell_score += 18
+        buy_score -= 18
+
+        sell_reasons.append(
+            "EMA50 < EMA200"
+        )
+
+    # RSI
+    if rsi14 >= 55:
+
+        buy_score += 12
+
+        buy_reasons.append(
+            f"RSI14 {rsi14:.1f}"
+        )
+
+    elif rsi14 <= 45:
+
+        sell_score += 12
+
+        sell_reasons.append(
+            f"RSI14 {rsi14:.1f}"
+        )
+
+    # MOMENTUM
+    if momentum > 0:
+
+        buy_score += min(
+            10,
+            abs(momentum) * 250
+        )
+
+        buy_reasons.append(
+            "positive momentum"
+        )
+
+    elif momentum < 0:
+
+        sell_score += min(
+            10,
+            abs(momentum) * 250
+        )
+
+        sell_reasons.append(
+            "negative momentum"
+        )
+
+    # SUPPORT / RESISTANCE
+    recent = closes[-30:]
+
+    if price <= min(recent) * 1.003:
+
+        buy_score += 8
+
+        buy_reasons.append(
+            "near support"
+        )
+
+    if price >= max(recent) * 0.997:
+
+        sell_score += 8
+
+        sell_reasons.append(
+            "near resistance"
+        )
+
+    # FINAL SIGNAL
+    if buy_score >= sell_score:
+
+        direction = "BUY"
+
+        confidence = round(
+            min(buy_score, 100),
+            1
+        )
+
+        reason = " + ".join(
+            buy_reasons
+        ) or "technical conditions"
+
+    else:
+
+        direction = "SELL"
+
+        confidence = round(
+            min(sell_score, 100),
+            1
+        )
+
+        reason = " + ".join(
+            sell_reasons
+        ) or "technical conditions"
+
+    now = time.time()
+
+    duration_seconds = DURATION_SECONDS.get(
+        duration,
+        900
+    )
+
+    expires_at = (
+        now + duration_seconds
+    )
+
+    return {
+        "symbol": symbol,
+        "direction": direction,
+        "confidence": confidence,
+        "duration": duration,
+        "price": price,
+        "ema50": ema50,
+        "ema200": ema200,
+        "rsi14": rsi14,
+        "momentum_pct": momentum,
+        "reason": reason,
+
+        "created_at": now,
+        "updated_at": now,
+        "expires_at": expires_at,
+
+        "auto_trade": False
+    }
+
 
 @app.get("/")
-def home(): return FileResponse("app/static/index.html")
+def home():
+
+    return FileResponse(
+        "app/static/index.html"
+    )
+
 
 @app.get("/health")
-def health(): return {"status":"online","bot":"Crypto.com Signal Bot V1","auto_trade":False}
+def health():
+
+    return {
+        "status": "online",
+        "bot": "Crypto.com Signal Bot V2",
+        "auto_trade": False
+    }
+
 
 @app.get("/api/signal")
-def signal(symbol="BTC_USDT",duration="15m"):
-    if duration not in DURATIONS: duration="15m"
-    key=symbol.upper()+":"+duration; now=time.time()
-    if key not in cache or now-cache[key]["updated_at"]>20:
-        try: cache[key]=analyze(symbol.upper(),duration)
+def signal(
+    symbol="BTC_USDT",
+    duration="15m"
+):
+
+    symbol = symbol.upper()
+
+    if duration not in DURATIONS:
+        duration = "15m"
+
+    key = (
+        symbol + ":" + duration
+    )
+
+    now = time.time()
+
+    # Generate a new signal when:
+    # 1. No previous signal exists
+    # 2. Previous signal has expired
+    if (
+        key not in cache
+        or now >= cache[key]["expires_at"]
+    ):
+
+        try:
+
+            cache[key] = analyze(
+                symbol,
+                duration
+            )
+
         except Exception as e:
-            if key in cache: return {"ok":True,"stale":True,**cache[key],"error":str(e)}
-            return {"ok":False,"error":str(e),"symbol":symbol,"duration":duration,"auto_trade":False}
-    return {"ok":True,**cache[key]}
+
+            if key in cache:
+
+                return {
+                    "ok": True,
+                    "stale": True,
+                    **cache[key],
+                    "error": str(e)
+                }
+
+            return {
+                "ok": False,
+                "error": str(e),
+                "symbol": symbol,
+                "duration": duration,
+                "auto_trade": False
+            }
+
+    result = cache[key]
+
+    remaining = max(
+        0,
+        int(
+            result["expires_at"] - now
+        )
+    )
+
+    return {
+        "ok": True,
+        **result,
+        "remaining_seconds": remaining
+    }
