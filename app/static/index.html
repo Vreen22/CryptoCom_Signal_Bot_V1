@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Signal Bot V1</title>
+<style>
+body{
+    margin:0;
+    font-family:Arial,sans-serif;
+    background:#0b1020;
+    color:white;
+}
+.container{
+    max-width:600px;
+    margin:auto;
+    padding:20px;
+}
+h1{
+    text-align:center;
+    margin-bottom:5px;
+}
+.subtitle{
+    text-align:center;
+    color:#9ca3af;
+    margin-bottom:25px;
+}
+.card{
+    background:#151c30;
+    border-radius:18px;
+    padding:20px;
+    margin-bottom:15px;
+}
+select,button{
+    width:100%;
+    padding:14px;
+    margin-top:10px;
+    border-radius:10px;
+    border:0;
+    font-size:16px;
+}
+button{
+    background:#2563eb;
+    color:white;
+    font-weight:bold;
+}
+.signal{
+    text-align:center;
+    font-size:42px;
+    font-weight:bold;
+    padding:20px;
+}
+.buy{color:#22c55e;}
+.sell{color:#ef4444;}
+.info{
+    display:flex;
+    justify-content:space-between;
+    padding:8px 0;
+    border-bottom:1px solid #293149;
+}
+.value{
+    font-weight:bold;
+}
+.countdown{
+    text-align:center;
+    font-size:30px;
+    font-weight:bold;
+    margin:15px 0;
+}
+.status{
+    text-align:center;
+    color:#9ca3af;
+    font-size:14px;
+}
+.auto{
+    text-align:center;
+    margin-top:15px;
+    color:#fbbf24;
+    font-weight:bold;
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<h1>₿ Crypto Signal Bot</h1>
+<div class="subtitle">Crypto.com Live Market Signals</div>
+
+<div class="card">
+
+<label>Crypto Pair</label>
+<select id="symbol">
+<option value="BTC_USDT">BTC / USDT</option>
+<option value="ETH_USDT">ETH / USDT</option>
+<option value="SOL_USDT">SOL / USDT</option>
+<option value="XRP_USDT">XRP / USDT</option>
+<option value="DOGE_USDT">DOGE / USDT</option>
+</select>
+
+<label>Signal Duration</label>
+<select id="duration">
+<option value="1m">1 Minute</option>
+<option value="2m">2 Minutes</option>
+<option value="3m">3 Minutes</option>
+<option value="5m">5 Minutes</option>
+<option value="10m">10 Minutes</option>
+<option value="15m">15 Minutes</option>
+<option value="30m">30 Minutes</option>
+<option value="1h">1 Hour</option>
+<option value="2h">2 Hours</option>
+<option value="3h">3 Hours</option>
+</select>
+
+<button onclick="getSignal()">GET LIVE SIGNAL</button>
+
+</div>
+
+<div class="card">
+
+<div id="signal" class="signal">WAITING</div>
+
+<div class="countdown">
+⏱️ <span id="timer">--:--</span>
+</div>
+
+<div class="info">
+<span>Crypto</span>
+<span id="pair" class="value">--</span>
+</div>
+
+<div class="info">
+<span>Price</span>
+<span id="price" class="value">--</span>
+</div>
+
+<div class="info">
+<span>Confidence</span>
+<span id="confidence" class="value">--</span>
+</div>
+
+<div class="info">
+<span>EMA 50</span>
+<span id="ema50" class="value">--</span>
+</div>
+
+<div class="info">
+<span>EMA 200</span>
+<span id="ema200" class="value">--</span>
+</div>
+
+<div class="info">
+<span>RSI 14</span>
+<span id="rsi" class="value">--</span>
+</div>
+
+<div class="info">
+<span>Reason</span>
+<span id="reason" class="value">--</span>
+</div>
+
+<div class="auto">
+AUTO TRADE: OFF
+</div>
+
+<div id="status" class="status">
+Waiting for live signal...
+</div>
+
+</div>
+</div>
+
+<script>
+let expiresAt = 0;
+let timerInterval = null;
+
+function durationToMs(duration){
+    const map = {
+        "1m":60000,
+        "2m":120000,
+        "3m":180000,
+        "5m":300000,
+        "10m":600000,
+        "15m":900000,
+        "30m":1800000,
+        "1h":3600000,
+        "2h":7200000,
+        "3h":10800000
+    };
+    return map[duration] || 900000;
+}
+
+function formatTime(ms){
+    if(ms <= 0) return "00:00";
+
+    let total = Math.floor(ms / 1000);
+    let h = Math.floor(total / 3600);
+    let m = Math.floor((total % 3600) / 60);
+    let s = total % 60;
+
+    if(h > 0){
+        return String(h).padStart(2,"0") + ":" +
+               String(m).padStart(2,"0") + ":" +
+               String(s).padStart(2,"0");
+    }
+
+    return String(m).padStart(2,"0") + ":" +
+           String(s).padStart(2,"0");
+}
+
+function startCountdown(){
+    if(timerInterval) clearInterval(timerInterval);
+
+    timerInterval = setInterval(async function(){
+
+        let remaining = expiresAt - Date.now();
+
+        document.getElementById("timer").textContent =
+            formatTime(remaining);
+
+        if(remaining <= 0){
+
+            clearInterval(timerInterval);
+
+            document.getElementById("timer").textContent = "EXPIRED";
+
+            document.getElementById("status").textContent =
+                "Signal expired — analyzing market again...";
+
+            await getSignal();
+
+        }
+
+    },1000);
+}
+
+async function getSignal(){
+
+    const symbol = document.getElementById("symbol").value;
+    const duration = document.getElementById("duration").value;
+
+    document.getElementById("status").textContent =
+        "Getting live Crypto.com market data...";
+
+    try{
+
+        const response = await fetch(
+            "/api/signal?symbol=" +
+            encodeURIComponent(symbol) +
+            "&duration=" +
+            encodeURIComponent(duration) +
+            "&_=" + Date.now()
+        );
+
+        const data = await response.json();
+
+        if(!data.ok){
+            throw new Error(data.error || "Signal error");
+        }
+
+        const signal = document.getElementById("signal");
+
+        signal.textContent = data.direction;
+
+        signal.className =
+            "signal " +
+            (data.direction === "BUY" ? "buy" : "sell");
+
+        document.getElementById("pair").textContent =
+            data.symbol;
+
+        document.getElementById("price").textContent =
+            Number(data.price).toFixed(4);
+
+        document.getElementById("confidence").textContent =
+            data.confidence + "%";
+
+        document.getElementById("ema50").textContent =
+            Number(data.ema50).toFixed(4);
+
+        document.getElementById("ema200").textContent =
+            Number(data.ema200).toFixed(4);
+
+        document.getElementById("rsi").textContent =
+            Number(data.rsi14).toFixed(1);
+
+        document.getElementById("reason").textContent =
+            data.reason;
+
+        document.getElementById("status").textContent =
+            "LIVE • Signal active";
+
+        expiresAt =
+            Date.now() + durationToMs(duration);
+
+        startCountdown();
+
+    }catch(error){
+
+        document.getElementById("signal").textContent = "ERROR";
+
+        document.getElementById("signal").className = "signal sell";
+
+        document.getElementById("status").textContent =
+            error.message;
+
+    }
+}
+
+getSignal();
+</script>
+
+</body>
+</html>
